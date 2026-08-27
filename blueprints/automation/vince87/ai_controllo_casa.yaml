@@ -1,11 +1,10 @@
 blueprint:
   name: AI Conversation - Gestione casa per ambiti
   description: >
-    Scopre automaticamente le entità da un catalogo chiuso di metadati,
-    legge direttamente solo gli stati necessari, fa pianificare all'agente
-    azioni strutturate e le esegue tramite servizi Home Assistant, una
-    chiamata e una entità alla volta. Le entità vengono sempre risolte
-    automaticamente contro il catalogo reale.
+    Risolve le entità richieste contro il catalogo reale di Home Assistant,
+    legge soltanto gli stati necessari e affida a un agente Conversation la
+    pianificazione di azioni strutturate. Le azioni vengono validate, eseguite
+    una entità alla volta e verificate sullo stato effettivamente raggiunto.
   domain: automation
 
   homeassistant:
@@ -35,14 +34,16 @@ blueprint:
     extra_instructions:
       name: Ambiti
       description: >
-        Scrivi tra backtick ogni friendly name o entity_id necessario all'ambito.
-        La V10.2 li risolve direttamente contro il catalogo reale, senza affidare
-        la copiatura all'AI. Usa virgolette normali per stati, modalità e altri
-        valori. Un nome assente o duplicato viene segnalato e non utilizzato.
-        Un gruppo con attributo entity_id viene espanso nei suoi membri.
-        La priorità risolve i conflitti: prevale il valore maggiore e, a
-        parità, il blocco più in basso. Valori consigliati: Antifurto 100,
-        TV 80, gestione ordinaria 50.
+        Definisci uno o più ambiti, ciascuno con titolo, regole e priorità.
+        Scrivi tra backtick ogni friendly name o entity_id che deve essere
+        risolto esattamente; usa virgolette normali per stati, modalità e altri
+        valori. I riferimenti vengono confrontati direttamente con il catalogo
+        di Home Assistant. Un riferimento assente o ambiguo viene segnalato e
+        non utilizzato. Se un ambito non contiene riferimenti tra backtick,
+        l'agente prova a selezionare le entità necessarie dal catalogo. I gruppi
+        con attributo entity_id vengono espansi nei rispettivi membri. In caso
+        di conflitto prevale la priorità maggiore; a parità prevale l'ambito
+        configurato più in basso.
       default: []
       selector:
         object:
@@ -63,6 +64,8 @@ blueprint:
                   multiline: true
             priority:
               label: Priorità
+              description: >
+                Valore da 0 a 100 usato per risolvere conflitti tra ambiti.
               required: false
               selector:
                 number:
@@ -76,7 +79,7 @@ blueprint:
       description: >
         In simulazione viene prodotto e validato il piano, ma nessun
         dispositivo viene modificato.
-      default: execute
+      default: dry_run
       selector:
         select:
           options:
@@ -100,7 +103,8 @@ blueprint:
 
     notification_title:
       name: Titolo notifiche
-      default: House Brain
+      description: Titolo usato per il resoconto e gli eventuali avvisi tecnici.
+      default: AI Home Manager
       selector:
         text:
 
@@ -638,13 +642,7 @@ actions:
             analisi_complete: |-
               {{ analisi_complete }}
 
-              {% set area_icons = {
-                'Tapparelle': '🪟',
-                'TV': '📺',
-                'Antifurto': '🔒',
-                'Clima': '🌡️'
-              } %}
-              {{ area_icons.get(repeat.item.title, '•') }} {{ repeat.item.title | upper }}
+              ◼️ {{ repeat.item.title | upper }}
               {{ risultato_analisi.get('summary', '⚠️ AI_RESPONSE_INVALID')
                  if risultato_analisi is mapping else '⚠️ AI_RESPONSE_INVALID' }}
 
