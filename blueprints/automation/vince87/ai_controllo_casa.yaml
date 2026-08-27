@@ -6,6 +6,7 @@ blueprint:
     pianificazione di azioni strutturate. Le azioni vengono validate, eseguite
     una entità alla volta e verificate sullo stato effettivamente raggiunto.
   domain: automation
+  source_url: https://github.com/vince87/ha-ai-house-manager/blob/main/blueprints/automation/vince87/ai_controllo_casa.yaml
 
   homeassistant:
     min_version: 2025.4.0
@@ -43,34 +44,12 @@ blueprint:
         l'agente prova a selezionare le entità necessarie dal catalogo. I gruppi
         con attributo entity_id vengono espansi nei rispettivi membri. In caso
         di conflitto prevale la priorità maggiore; a parità prevale l'ambito
-        configurato più in basso.
+        configurato più in basso. Inserisci una lista YAML di oggetti con le
+        chiavi title, text e priority; priority è facoltativa e vale 50 se
+        omessa.
       default: []
       selector:
         object:
-          multiple: true
-          label_field: title
-          description_field: text
-          fields:
-            title:
-              label: Titolo
-              required: true
-              selector:
-                text:
-            text:
-              label: Istruzioni
-              required: true
-              selector:
-                text:
-                  multiline: true
-            priority:
-              label: Priorità
-              required: false
-              selector:
-                number:
-                  min: 0
-                  max: 100
-                  step: 1
-                  mode: slider
 
     execution_mode:
       name: Modalità di esecuzione
