@@ -1,0 +1,877 @@
+blueprint:
+  name: AI Conversation - Gestione casa per ambiti
+  description: >
+    Scopre automaticamente le entità da un catalogo chiuso di metadati,
+    legge direttamente solo gli stati necessari, fa pianificare all'agente
+    azioni strutturate e le esegue tramite servizi Home Assistant, una
+    chiamata e una entità alla volta. Le entità vengono sempre risolte
+    automaticamente contro il catalogo reale.
+  domain: automation
+
+  homeassistant:
+    min_version: 2025.4.0
+
+  input:
+    automation_triggers:
+      name: Trigger
+      selector:
+        trigger:
+
+    conversation_agent:
+      name: Agente AI
+      selector:
+        entity:
+          domain: conversation
+
+    response_language:
+      name: Lingua del resoconto (locale)
+      description: >
+        Inserisci un codice locale come it_IT, en_EN, en_GB, en_US, de_DE o fr_FR.
+        L'AI scriverà riepiloghi e descrizioni delle azioni in questa lingua.
+      default: it_IT
+      selector:
+        text:
+
+    extra_instructions:
+      name: Ambiti
+      description: >
+        Scrivi tra backtick ogni friendly name o entity_id necessario all'ambito.
+        La V10.2 li risolve direttamente contro il catalogo reale, senza affidare
+        la copiatura all'AI. Usa virgolette normali per stati, modalità e altri
+        valori. Un nome assente o duplicato viene segnalato e non utilizzato.
+        Un gruppo con attributo entity_id viene espanso nei suoi membri.
+        La priorità risolve i conflitti: prevale il valore maggiore e, a
+        parità, il blocco più in basso. Valori consigliati: Antifurto 100,
+        TV 80, gestione ordinaria 50.
+      default: []
+      selector:
+        object:
+          multiple: true
+          label_field: title
+          description_field: text
+          fields:
+            title:
+              label: Titolo
+              required: true
+              selector:
+                text:
+            text:
+              label: Istruzioni
+              required: true
+              selector:
+                text:
+                  multiline: true
+            priority:
+              label: Priorità
+              required: false
+              selector:
+                number:
+                  min: 0
+                  max: 100
+                  step: 1
+                  mode: slider
+
+    execution_mode:
+      name: Modalità di esecuzione
+      description: >
+        In simulazione viene prodotto e validato il piano, ma nessun
+        dispositivo viene modificato.
+      default: execute
+      selector:
+        select:
+          options:
+            - label: Esecuzione reale
+              value: execute
+            - label: Solo simulazione
+              value: dry_run
+
+    verification_timeout:
+      name: Tempo massimo di verifica
+      description: >
+        Secondi concessi a ogni dispositivo per raggiungere lo stato richiesto.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 5
+          unit_of_measurement: s
+          mode: slider
+
+    notification_title:
+      name: Titolo notifiche
+      default: House Brain
+      selector:
+        text:
+
+mode: single
+
+variables:
+  conversation_agent: !input conversation_agent
+  response_language: !input response_language
+  execution_mode: !input execution_mode
+  verification_timeout: !input verification_timeout
+  extra_instructions: !input extra_instructions
+  notification_title: !input notification_title
+  azioni_pianificate: []
+  analisi_complete: ""
+  discovery_report: ""
+  diagnostica: []
+  risultati_esecuzione: []
+  mappa_scoperta: {}
+  discovery_domains:
+    - alarm_control_panel
+    - binary_sensor
+    - climate
+    - cover
+    - device_tracker
+    - input_boolean
+    - light
+    - lock
+    - media_player
+    - person
+    - sensor
+    - sun
+    - switch
+    - weather
+
+triggers: !input automation_triggers
+conditions: []
+
+actions:
+  ##########################################################################
+  # PHASE 0: automatic closed-catalog discovery. Metadata only, no states.
+  ##########################################################################
+  - variables:
+      catalog_entity_ids: >-
+        {% set ns = namespace(entities=[]) %}
+        {% for item in states %}
+          {% set domain = item.entity_id.split('.')[0] %}
+          {% if domain in discovery_domains %}
+            {% set ns.entities = ns.entities + [item.entity_id] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.entities }}
+
+      entity_catalog: |-
+        {% for item in states %}
+          {% set domain = item.entity_id.split('.')[0] %}
+          {% if domain in discovery_domains %}
+        - {{ item.entity_id }} | name={{ item.attributes.friendly_name | default(item.entity_id, true) }} | area={{ area_name(item.entity_id) | default('', true) }} | class={{ item.attributes.device_class | default('', true) }} | labels={{ labels(item.entity_id) | default([], true) | join(',') }}
+          {% endif %}
+        {% endfor %}
+
+      discovery_requirements: |-
+        {% for area in extra_instructions %}
+        AREA_INDEX: {{ loop.index }}
+        TITLE: {{ area.title }}
+        INSTRUCTIONS:
+        {{ area.text }}
+        ---
+        {% endfor %}
+
+      deterministic_only: >-
+        {% set ns = namespace(enabled=true) %}
+        {% for area in extra_instructions %}
+          {% if area.text | regex_findall('`([^`]+)`') | count == 0 %}
+            {% set ns.enabled = false %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.enabled }}
+
+  - if:
+      - condition: template
+        value_template: "{{ not deterministic_only }}"
+    then:
+      - action: conversation.process
+        data:
+          agent_id: "{{ conversation_agent }}"
+          text: >-
+            You are performing entity resolution only. Do not read states, do
+            not call tools and do not plan or execute Home Assistant actions.
+
+            For every area, first extract each distinct device, measurement or
+            condition required by its instructions. Then resolve each requirement
+            independently against the ENTITY CATALOG.
+
+            ENTITY CATALOG:
+            {{ entity_catalog }}
+
+            AREAS AND INSTRUCTIONS:
+            {{ discovery_requirements }}
+
+            MANDATORY RULES:
+            - Select only exact entity_id values copied from ENTITY CATALOG.
+            - Never invent, shorten or rewrite an entity_id.
+            - If an exact entity_id is written in the instructions and exists in
+              the catalog, select that exact entity.
+            - Treat a friendly name written in the instructions as the strongest
+              matching signal. Prefer an exact friendly-name match.
+            - Never substitute an entity merely because it shares a generic word
+              such as battery, temperature, home, floor, security or climate.
+            - A controllable device must resolve to the appropriate domain:
+              alarm to alarm_control_panel, lock to lock, climate unit to climate
+              and blind to cover.
+            - Include every decision input and every possible action target, but
+              select the smallest sufficient set. Do not add diagnostic or
+              similarly named entities that the instructions do not require.
+            - If no confident catalog match exists, put the human-readable
+              requirement in unresolved. Never replace it with a guess.
+            - A group may be selected; the blueprint will expand its members.
+            - Return no more than 40 entities for each area.
+            - Return one result for every AREA_INDEX, even when the list is
+              empty.
+
+            Return valid JSON only, without Markdown or additional text:
+            {
+              "areas": [
+                {
+                  "index": 1,
+                  "entities": ["domain.exact_entity_id"],
+                  "unresolved": ["friendly name or required datum not found"]
+                }
+              ]
+            }
+        response_variable: discovery_ai
+        continue_on_error: true
+
+  - variables:
+      risposta_scoperta: >-
+        {{ discovery_ai.response.speech.plain.speech | trim
+           if discovery_ai is defined
+              and discovery_ai.response is defined
+              and discovery_ai.response.speech is defined
+              and discovery_ai.response.speech.plain is defined
+              and discovery_ai.response.speech.plain.speech is defined
+           else '' }}
+
+      risultato_scoperta: >-
+        {% if deterministic_only %}
+          {{ {'areas': []} }}
+        {% elif risposta_scoperta is mapping %}
+          {{ risposta_scoperta }}
+        {% else %}
+          {% set raw = risposta_scoperta
+            | replace('```json', '')
+            | replace('```JSON', '')
+            | replace('```', '')
+            | trim %}
+          {{ raw | from_json(default=none) }}
+        {% endif %}
+
+  - variables:
+      mappa_scoperta: >-
+        {% if risultato_scoperta is mapping
+              and risultato_scoperta.get('areas', []) is sequence
+              and risultato_scoperta.get('areas', []) is not string %}
+          {{ risultato_scoperta }}
+        {% else %}
+          {{ {'areas': []} }}
+        {% endif %}
+
+      diagnostica: >-
+        {% if not deterministic_only
+              and (risultato_scoperta is not mapping
+                or risultato_scoperta.get('areas', []) is not sequence
+                or risultato_scoperta.get('areas', []) is string) %}
+          {{ diagnostica + ['Entity discovery returned invalid JSON; automatic selection is empty'] }}
+        {% else %}
+          {{ diagnostica }}
+        {% endif %}
+
+  # FASE 1: lettura diretta e pianificazione, senza tool Home Assistant.
+  - repeat:
+      for_each: "{{ extra_instructions }}"
+      sequence:
+        - variables:
+            entita_selezionate: >-
+              {%- set ns = namespace(automatic=[], explicit=[]) -%}
+              {%- if mappa_scoperta is mapping -%}
+                {%- for area in mappa_scoperta.get('areas', []) -%}
+                  {%- if area is mapping
+                        and area.get('index', 0) | int == repeat.index
+                        and area.get('entities', []) is sequence
+                        and area.get('entities', []) is not string -%}
+                    {%- for entity in area.get('entities', [])[:40] -%}
+                      {%- if entity in catalog_entity_ids -%}
+                        {%- set ns.automatic = ns.automatic + [entity] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {%- set declared = repeat.item.text | regex_findall('`([^`]+)`') | unique | list -%}
+              {%- for reference in declared -%}
+                {%- set match = namespace(entities=[]) -%}
+                {%- if reference in catalog_entity_ids -%}
+                  {%- set match.entities = [reference] -%}
+                {%- else -%}
+                  {%- for item in states -%}
+                    {%- set domain = item.entity_id.split('.')[0] -%}
+                    {%- if domain in discovery_domains
+                          and (item.attributes.friendly_name | default('', true) | trim)
+                              == (reference | trim) -%}
+                      {%- set match.entities = match.entities + [item.entity_id] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- if match.entities | count == 1 -%}
+                  {%- set ns.explicit = ns.explicit + match.entities -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{- (ns.explicit if declared | count > 0 else ns.automatic) | unique | list -}}
+
+            discovery_rejections: >-
+              {% set ns = namespace(count=0) %}
+              {% if mappa_scoperta is mapping %}
+                {% for area in mappa_scoperta.get('areas', []) %}
+                  {% if area is mapping
+                        and area.get('index', 0) | int == repeat.index
+                        and area.get('entities', []) is sequence
+                        and area.get('entities', []) is not string %}
+                    {% for entity in area.get('entities', []) %}
+                      {% if entity not in catalog_entity_ids %}
+                        {% set ns.count = ns.count + 1 %}
+                      {% endif %}
+                    {% endfor %}
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+              {{ ns.count }}
+
+            discovery_empty: >-
+              {{ entita_selezionate | count == 0 }}
+
+            requisiti_non_risolti: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- set declared = repeat.item.text | regex_findall('`([^`]+)`') | unique | list -%}
+              {%- for reference in declared -%}
+                {%- set match = namespace(count=0) -%}
+                {%- if reference in catalog_entity_ids -%}
+                  {%- set match.count = 1 -%}
+                {%- else -%}
+                  {%- for item in states -%}
+                    {%- set domain = item.entity_id.split('.')[0] -%}
+                    {%- if domain in discovery_domains
+                          and (item.attributes.friendly_name | default('', true) | trim)
+                              == (reference | trim) -%}
+                      {%- set match.count = match.count + 1 -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- if match.count == 0 -%}
+                  {%- set ns.items = ns.items + ['Reference not found: ' ~ reference] -%}
+                {%- elif match.count > 1 -%}
+                  {%- set ns.items = ns.items + ['Ambiguous friendly name: ' ~ reference] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{- ns.items | unique | list -}}
+
+            entita_blocco: >-
+              {% set ns = namespace(entities=[]) %}
+              {% for entity in entita_selezionate %}
+                {% set members = state_attr(entity, 'entity_id') %}
+                {% if members is sequence and members is not string %}
+                  {% set ns.entities = ns.entities + (members | list) %}
+                {% else %}
+                  {% set ns.entities = ns.entities + [entity] %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.entities | unique | list }}
+
+            contesto_entita: >-
+              {% for entity in entita_blocco %}
+              ---
+              entity_id: {{ entity }}
+              {% if states[entity] is defined %}
+              {% if entity.split('.')[0] == 'cover' %}
+              {% set position = state_attr(entity, 'current_position') %}
+              state: {% if position is none %}{{ states(entity) }}{% elif position | int == 0 %}closed{% elif position | int == 100 %}open{% else %}partially_open{% endif %}
+              current_position: {{ position }}
+              friendly_name: {{ state_attr(entity, 'friendly_name') | default(entity, true) }}
+              supported_features: {{ state_attr(entity, 'supported_features') | default(0, true) }}
+              {% else %}
+              state: {{ states(entity) }}
+              attributes: {{ states[entity].attributes | to_json }}
+              {% endif %}
+              {% else %}
+              state: ENTITY_NOT_FOUND
+              attributes: {}
+              {% endif %}
+              {% endfor %}
+
+        - action: conversation.process
+          data:
+            agent_id: "{{ conversation_agent }}"
+            text: >-
+              Analyze only the "{{ repeat.item.title }}" area.
+
+              Current Home Assistant time: {{ now().isoformat() }}
+
+              AREA INSTRUCTIONS:
+              {{ repeat.item.text }}
+
+              STATES READ DIRECTLY BY THE BLUEPRINT:
+              {{ contesto_entita }}
+
+              UNRESOLVED REQUIREMENTS FROM CATALOG MATCHING:
+              {{ requisiti_non_risolti | to_json }}
+
+              RESPONSE LANGUAGE:
+              Write all user-facing text in the locale {{ response_language }}.
+              This applies to summary and every action description. JSON keys,
+              entity IDs, service names and data keys must always remain in
+              English exactly as specified below.
+
+              MANDATORY RULES:
+              - Use only the supplied data. Do not search for entities and do
+                not call any tool.
+              - Never state or imply the state of a device or measurement that
+                is absent from STATES READ DIRECTLY BY THE BLUEPRINT.
+              - For each unresolved requirement, explicitly say that the related
+                rule cannot be evaluated. Continue evaluating unrelated rules.
+              - Do not infer alarm state from battery, BMS, presence, locks,
+                covers or any other indirect entity.
+              - Do not infer climate state merely from time, battery or desired
+                schedule. A climate device absent from the supplied states has
+                unknown state.
+              - Do not execute anything. Only create a plan.
+              - If an entity state is unavailable, unknown or ENTITY_NOT_FOUND,
+                do not act on it and report the problem in the summary.
+              - For a cover, the supplied state is authoritative: position 0 is
+                closed, 100 is open and an intermediate value is partially open.
+              - Every item in actions must contain exactly one entity and one
+                Home Assistant service call.
+              - Copy entity_id exactly from the supplied states.
+              - description must briefly explain the action to the user in
+                locale {{ response_language }}. Do not include an entity ID.
+              - Use only the following service/domain pairs:
+                cover.open_cover, cover.close_cover, cover.set_cover_position;
+                light.turn_on, light.turn_off;
+                switch.turn_on, switch.turn_off;
+                media_player.turn_on, media_player.turn_off;
+                lock.lock, lock.unlock;
+                climate.turn_on, climate.turn_off, climate.set_hvac_mode,
+                climate.set_temperature;
+                alarm_control_panel.alarm_arm_away,
+                alarm_control_panel.alarm_arm_home,
+                alarm_control_panel.alarm_arm_night,
+                alarm_control_panel.alarm_disarm.
+              - data must be {} when the service needs no parameters.
+              - cover.set_cover_position requires position.
+              - climate.set_hvac_mode requires hvac_mode.
+              - climate.set_temperature requires temperature.
+              - If both HVAC mode and temperature must change, create two
+                consecutive actions for the same entity.
+              - Never combine climate.turn_off with any other action for the
+                same climate entity.
+              - For domains other than climate, return at most one action per
+                entity and choose the final desired state.
+              - Return actions: [] only when the desired state is already met
+                or the area instructions require no intervention.
+
+              Return valid JSON only, without Markdown or additional text:
+              {
+                "summary": "decision based on the supplied states, written in the selected response language",
+                "actions": [
+                  {
+                    "entity_id": "domain.entity",
+                    "service": "domain.service",
+                    "data": {},
+                    "description": "short user-facing action description in {{ response_language }}"
+                  }
+                ]
+              }
+          response_variable: analisi_ai
+          continue_on_error: true
+
+        - variables:
+            risposta_analisi: >-
+              {{ analisi_ai.response.speech.plain.speech | trim
+                 if analisi_ai is defined
+                    and analisi_ai.response is defined
+                    and analisi_ai.response.speech is defined
+                    and analisi_ai.response.speech.plain is defined
+                    and analisi_ai.response.speech.plain.speech is defined
+                 else '' }}
+            risultato_analisi: >-
+              {% if entita_blocco | count == 0 %}
+                {{ {
+                  'summary': 'Dati insufficienti: nessuna entità reale è stata risolta per questo ambito.',
+                  'actions': []
+                } }}
+              {% elif risposta_analisi is mapping %}
+                {{ risposta_analisi }}
+              {% else %}
+                {% set raw = risposta_analisi
+                  | replace('```json', '')
+                  | replace('```JSON', '')
+                  | replace('```', '')
+                  | trim %}
+                {{ raw | from_json(default=none) }}
+              {% endif %}
+
+        - variables:
+            azioni_blocco_valide: >-
+              {% set allowed_services = {
+                'cover': ['cover.open_cover', 'cover.close_cover', 'cover.set_cover_position'],
+                'light': ['light.turn_on', 'light.turn_off'],
+                'switch': ['switch.turn_on', 'switch.turn_off'],
+                'media_player': ['media_player.turn_on', 'media_player.turn_off'],
+                'lock': ['lock.lock', 'lock.unlock'],
+                'climate': ['climate.turn_on', 'climate.turn_off', 'climate.set_hvac_mode', 'climate.set_temperature'],
+                'alarm_control_panel': ['alarm_control_panel.alarm_arm_away', 'alarm_control_panel.alarm_arm_home', 'alarm_control_panel.alarm_arm_night', 'alarm_control_panel.alarm_disarm']
+              } %}
+              {% set ns = namespace(actions=[]) %}
+              {% if risultato_analisi is mapping
+                    and risultato_analisi.get('actions', []) is sequence
+                    and risultato_analisi.get('actions', []) is not string %}
+                {% for item in risultato_analisi.get('actions', []) %}
+                  {% if item is mapping %}
+                    {% set entity = item.get('entity_id', '') %}
+                    {% set domain = entity.split('.')[0] if '.' in entity else '' %}
+                    {% set service = item.get('service', '') %}
+                    {% set data = item.get('data', {}) %}
+                    {% set description = item.get('description', service) | string | trim %}
+                    {% if entity in entita_blocco
+                          and states[entity] is defined
+                          and states(entity) not in ['unavailable', 'unknown']
+                          and service in allowed_services.get(domain, [])
+                          and data is mapping %}
+                      {% set no_data_services = [
+                        'cover.open_cover', 'cover.close_cover',
+                        'light.turn_on', 'light.turn_off',
+                        'switch.turn_on', 'switch.turn_off',
+                        'media_player.turn_on', 'media_player.turn_off',
+                        'lock.lock', 'lock.unlock',
+                        'climate.turn_on', 'climate.turn_off',
+                        'alarm_control_panel.alarm_arm_away',
+                        'alarm_control_panel.alarm_arm_home',
+                        'alarm_control_panel.alarm_arm_night',
+                        'alarm_control_panel.alarm_disarm'
+                      ] %}
+                      {% set min_temp = state_attr(entity, 'min_temp') %}
+                      {% set max_temp = state_attr(entity, 'max_temp') %}
+                      {% set hvac_modes = state_attr(entity, 'hvac_modes') | default([], true) %}
+                      {% set current_state = states(entity) %}
+                      {% set current_position = state_attr(entity, 'current_position') %}
+                      {% set valid_data =
+                        (service not in no_data_services or data | count == 0)
+                        and
+                        (service != 'cover.set_cover_position' or
+                          ('position' in data and data | count == 1
+                           and data.position | float(-1) >= 0
+                           and data.position | float(-1) <= 100))
+                        and
+                        (service != 'climate.set_hvac_mode' or
+                          ('hvac_mode' in data and data | count == 1
+                           and data.hvac_mode in hvac_modes))
+                        and
+                        (service != 'climate.set_temperature' or
+                          ('temperature' in data and data | count == 1
+                           and (min_temp is none or data.temperature | float(-999) >= min_temp | float)
+                           and (max_temp is none or data.temperature | float(999) <= max_temp | float)))
+                      %}
+                      {% set requires_change =
+                        ((current_position | float(-999) != 0)
+                          if current_position is not none else current_state != 'closed')
+                          if service == 'cover.close_cover' else
+                        ((current_position | float(-999) != 100)
+                          if current_position is not none else current_state != 'open')
+                          if service == 'cover.open_cover' else
+                        (current_position is none or
+                          (current_position | float(-999) - data.position | float) | abs > 2)
+                          if service == 'cover.set_cover_position' else
+                        (current_state != 'on')
+                          if service in ['light.turn_on', 'switch.turn_on'] else
+                        (current_state != 'off')
+                          if service in ['light.turn_off', 'switch.turn_off',
+                                         'media_player.turn_off', 'climate.turn_off'] else
+                        (current_state == 'off')
+                          if service in ['media_player.turn_on', 'climate.turn_on'] else
+                        (current_state != 'locked') if service == 'lock.lock' else
+                        (current_state != 'unlocked') if service == 'lock.unlock' else
+                        (current_state != data.hvac_mode)
+                          if service == 'climate.set_hvac_mode' else
+                        ((state_attr(entity, 'temperature') | float(-999)
+                          - data.temperature | float) | abs > 0.2)
+                          if service == 'climate.set_temperature' else
+                        (current_state != 'armed_away')
+                          if service == 'alarm_control_panel.alarm_arm_away' else
+                        (current_state != 'armed_home')
+                          if service == 'alarm_control_panel.alarm_arm_home' else
+                        (current_state != 'armed_night')
+                          if service == 'alarm_control_panel.alarm_arm_night' else
+                        (current_state != 'disarmed')
+                          if service == 'alarm_control_panel.alarm_disarm' else true
+                      %}
+                      {% if valid_data and requires_change %}
+                        {% set ns.actions = ns.actions + [{
+                          'entity_id': entity,
+                          'service': service,
+                          'data': data,
+                          'description': description,
+                          'area': repeat.item.title,
+                          'priority': repeat.item.priority | default(50) | int,
+                          'block_order': repeat.index | int,
+                          'action_order': loop.index | int
+                        }] %}
+                      {% endif %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+              {{ ns.actions }}
+
+        - variables:
+            azioni_pianificate: >-
+              {{ azioni_pianificate + azioni_blocco_valide }}
+            discovery_report: |-
+              {{ discovery_report }}
+              {{ repeat.item.title }} ({{ entita_blocco | count }}):
+              {% for entity in entita_blocco %}
+              - {{ entity }}
+              {% endfor %}
+              {% for requirement in requisiti_non_risolti %}
+              - NOT RESOLVED: {{ requirement }}
+              {% endfor %}
+            analisi_complete: |-
+              {{ analisi_complete }}
+
+              {% set area_icons = {
+                'Tapparelle': '🪟',
+                'TV': '📺',
+                'Antifurto': '🔒',
+                'Clima': '🌡️'
+              } %}
+              {{ area_icons.get(repeat.item.title, '•') }} {{ repeat.item.title | upper }}
+              {{ risultato_analisi.get('summary', '⚠️ AI_RESPONSE_INVALID')
+                 if risultato_analisi is mapping else '⚠️ AI_RESPONSE_INVALID' }}
+
+        - variables:
+            diagnostica: >-
+              {% set ns = namespace(items=diagnostica) %}
+              {% if discovery_rejections | int > 0 %}
+                {% set ns.items = ns.items + [repeat.item.title ~ ': '
+                  ~ discovery_rejections ~ ' discovered entity ID(s) rejected'] %}
+              {% endif %}
+              {% if discovery_empty %}
+                {% set ns.items = ns.items + [repeat.item.title ~ ': automatic discovery selected no entities'] %}
+              {% endif %}
+              {% for requirement in requisiti_non_risolti %}
+                {% set ns.items = ns.items + [repeat.item.title ~ ': unresolved requirement: ' ~ requirement] %}
+              {% endfor %}
+              {% if risultato_analisi is not mapping %}
+                {% set ns.items = ns.items + [repeat.item.title ~ ': invalid JSON response'] %}
+              {% elif risultato_analisi.get('actions', []) is not sequence
+                    or risultato_analisi.get('actions', []) is string %}
+                {% set ns.items = ns.items + [repeat.item.title ~ ': actions is not a list'] %}
+              {% else %}
+                {% set rejected = (risultato_analisi.get('actions', []) | count)
+                                  - (azioni_blocco_valide | count) %}
+                {% if rejected > 0 %}
+                  {% set ns.items = ns.items + [repeat.item.title ~ ': '
+                  ~ rejected ~ ' proposed action(s) rejected or already satisfied'] %}
+                {% endif %}
+              {% endif %}
+              {{ ns.items }}
+
+        - delay:
+            seconds: 2
+
+  # One area wins for each entity. Higher priority wins; on equal priority,
+  # the area configured later wins. Contradictory actions are normalized.
+  - variables:
+      azioni_risolte: >-
+        {% set ns = namespace(actions=[]) %}
+        {% for item in azioni_pianificate %}
+          {% set winner = namespace(priority=-1, block_order=-1) %}
+          {% for candidate in azioni_pianificate %}
+            {% if candidate.entity_id == item.entity_id %}
+              {% if candidate.priority | int > winner.priority
+                    or (candidate.priority | int == winner.priority
+                        and candidate.block_order | int > winner.block_order) %}
+                {% set winner.priority = candidate.priority | int %}
+                {% set winner.block_order = candidate.block_order | int %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+
+          {% if item.priority | int == winner.priority
+                and item.block_order | int == winner.block_order %}
+            {% set domain = item.entity_id.split('.')[0] %}
+            {% if domain == 'climate' %}
+              {% set family = 'power' if item.service in
+                ['climate.turn_on', 'climate.turn_off']
+                else ('hvac' if item.service == 'climate.set_hvac_mode'
+                else 'temperature') %}
+            {% else %}
+              {% set family = 'state' %}
+            {% endif %}
+
+            {% set decision = namespace(last_order=-1, climate_off=false) %}
+            {% for candidate in azioni_pianificate %}
+              {% if candidate.entity_id == item.entity_id
+                    and candidate.priority | int == winner.priority
+                    and candidate.block_order | int == winner.block_order %}
+                {% set candidate_domain = candidate.entity_id.split('.')[0] %}
+                {% if candidate_domain == 'climate' %}
+                  {% set candidate_family = 'power' if candidate.service in
+                    ['climate.turn_on', 'climate.turn_off']
+                    else ('hvac' if candidate.service == 'climate.set_hvac_mode'
+                    else 'temperature') %}
+                  {% if candidate.service == 'climate.turn_off' %}
+                    {% set decision.climate_off = true %}
+                  {% endif %}
+                {% else %}
+                  {% set candidate_family = 'state' %}
+                {% endif %}
+                {% if candidate_family == family
+                      and candidate.action_order | int > decision.last_order %}
+                  {% set decision.last_order = candidate.action_order | int %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+
+            {% if item.action_order | int == decision.last_order
+                  and not (domain == 'climate' and decision.climate_off
+                           and item.service != 'climate.turn_off') %}
+              {% set ns.actions = ns.actions + [item] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.actions }}
+
+  - variables:
+      diagnostica: >-
+        {% set removed = (azioni_pianificate | count) - (azioni_risolte | count) %}
+        {{ diagnostica + ([removed ~ ' action(s) removed by priority/conflict resolution']
+           if removed > 0 else []) }}
+      azioni_pianificate: "{{ azioni_risolte }}"
+
+  # FASE 2: direct sequential execution, followed by state verification.
+  - repeat:
+      for_each: "{{ azioni_pianificate }}"
+      sequence:
+        - if:
+            - condition: template
+              value_template: "{{ execution_mode == 'execute' }}"
+          then:
+            - action: "{{ repeat.item.service }}"
+              target:
+                entity_id: "{{ repeat.item.entity_id }}"
+              data: "{{ repeat.item.data | default({}) }}"
+              continue_on_error: true
+
+            - wait_template: >-
+                {% set entity = repeat.item.entity_id %}
+                {% set service = repeat.item.service %}
+                {% set data = repeat.item.data | default({}) %}
+                {% set state = states(entity) %}
+                {% if service == 'cover.close_cover' %}
+                  {% set position = state_attr(entity, 'current_position') %}
+                  {{ position | int(-1) == 0 if position is not none else state == 'closed' }}
+                {% elif service == 'cover.open_cover' %}
+                  {% set position = state_attr(entity, 'current_position') %}
+                  {{ position | int(-1) == 100 if position is not none else state == 'open' }}
+                {% elif service == 'cover.set_cover_position' %}
+                  {{ (state_attr(entity, 'current_position') | float(-999)
+                      - data.position | float) | abs <= 2 }}
+                {% elif service in ['light.turn_on', 'switch.turn_on'] %}
+                  {{ state == 'on' }}
+                {% elif service in ['light.turn_off', 'switch.turn_off',
+                                     'media_player.turn_off', 'climate.turn_off'] %}
+                  {{ state == 'off' }}
+                {% elif service == 'media_player.turn_on' %}
+                  {{ state not in ['off', 'unavailable', 'unknown'] }}
+                {% elif service == 'lock.lock' %}
+                  {{ state == 'locked' }}
+                {% elif service == 'lock.unlock' %}
+                  {{ state == 'unlocked' }}
+                {% elif service == 'climate.turn_on' %}
+                  {{ state not in ['off', 'unavailable', 'unknown'] }}
+                {% elif service == 'climate.set_hvac_mode' %}
+                  {{ state == data.hvac_mode }}
+                {% elif service == 'climate.set_temperature' %}
+                  {{ (state_attr(entity, 'temperature') | float(-999)
+                      - data.temperature | float) | abs <= 0.2 }}
+                {% elif service == 'alarm_control_panel.alarm_arm_away' %}
+                  {{ state == 'armed_away' }}
+                {% elif service == 'alarm_control_panel.alarm_arm_home' %}
+                  {{ state == 'armed_home' }}
+                {% elif service == 'alarm_control_panel.alarm_arm_night' %}
+                  {{ state == 'armed_night' }}
+                {% elif service == 'alarm_control_panel.alarm_disarm' %}
+                  {{ state == 'disarmed' }}
+                {% else %}
+                  false
+                {% endif %}
+              timeout:
+                seconds: "{{ verification_timeout | int }}"
+              continue_on_timeout: true
+
+        - variables:
+            risultato_azione: >-
+              {% if repeat.item.service in ['cover.open_cover', 'cover.close_cover',
+                                             'cover.set_cover_position'] %}
+                {% set position = state_attr(repeat.item.entity_id, 'current_position') %}
+                {% set actual = states(repeat.item.entity_id)
+                  if position is none else position %}
+              {% elif repeat.item.service == 'climate.set_temperature' %}
+                {% set actual = state_attr(repeat.item.entity_id, 'temperature') %}
+              {% else %}
+                {% set actual = states(repeat.item.entity_id) %}
+              {% endif %}
+              {{ {
+                'entity_id': repeat.item.entity_id,
+                'friendly_name': state_attr(repeat.item.entity_id, 'friendly_name')
+                  | default(repeat.item.entity_id, true),
+                'description': repeat.item.description,
+                'service': repeat.item.service,
+                'status': 'simulated' if execution_mode == 'dry_run'
+                          else ('success' if wait.completed | default(false) else 'failed'),
+                'actual_value': actual
+              } }}
+
+        - variables:
+            risultati_esecuzione: >-
+              {{ risultati_esecuzione + [risultato_azione] }}
+
+        - delay:
+            seconds: 2
+
+  # Final user-facing report. Action descriptions are already localized by AI.
+  - action: persistent_notification.create
+    data:
+      title: "{{ notification_title }}"
+      message: |-
+        🏠 {{ now().strftime('%Y-%m-%d %H:%M') }} · {{ response_language }}
+        {% if execution_mode == 'dry_run' %}
+        🧪 DRY RUN
+
+        🔎 ENTITY RESOLUTION
+        {{ discovery_report }}
+        {% endif %}
+
+        {{ analisi_complete }}
+
+        {% if risultati_esecuzione | count == 0 %}
+        ✅
+        {% else %}
+        {% for item in risultati_esecuzione %}
+        {{ '🧪' if item.status == 'simulated' else ('✅' if item.status == 'success' else '❌') }} {{ item.friendly_name }} — {{ item.description }}{% if item.status == 'failed' %} [actual: {{ item.actual_value }}]{% endif %}
+        {% endfor %}
+        {% endif %}
+
+  # Separate technical warning, created only when something was rejected.
+  - if:
+      - condition: template
+        value_template: "{{ diagnostica | count > 0 }}"
+    then:
+      - action: persistent_notification.create
+        data:
+          title: "{{ notification_title }} - Diagnostics"
+          message: |-
+            {% for item in diagnostica %}
+            - {{ item }}
+            {% endfor %}
