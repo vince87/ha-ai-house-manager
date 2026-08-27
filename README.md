@@ -22,9 +22,9 @@ Blueprint per Home Assistant che organizza la gestione della casa in ambiti indi
 
 ## Installazione
 
-[![Apri Home Assistant e importa il blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fvince87%2Fha-ai-house-manager%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fvincenzo%2Fai_controllo_casa.yaml)
+[![Apri Home Assistant e importa il blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fvince87%2Fha-ai-house-manager%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fvince87%2Fai_controllo_casa.yaml)
 
-In alternativa, copia `blueprints/automation/vincenzo/ai_controllo_casa.yaml` nella stessa posizione della configurazione Home Assistant e ricarica i blueprint delle automazioni.
+In alternativa, copia `blueprints/automation/vince87/ai_controllo_casa.yaml` nella stessa posizione della configurazione Home Assistant e ricarica i blueprint delle automazioni.
 
 ## Come scrivere gli ambiti
 
