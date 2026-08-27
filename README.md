@@ -14,6 +14,7 @@ Blueprint per Home Assistant che organizza la gestione della casa in ambiti indi
 - Esecuzione sequenziale e verifica dello stato raggiunto.
 - Modalità simulazione `dry_run`.
 - Diagnostica separata per riferimenti assenti, ambigui o azioni respinte.
+- Notifiche disattivabili, destinatario `notify.*` aggiuntivo opzionale e riepilogo delle azioni.
 
 ## Requisiti
 
@@ -69,10 +70,13 @@ Le entità ricevute da ogni analisi sono l'unione dei riferimenti presenti nel p
 
 ## Notifiche
 
+- `Notifiche` abilita o disabilita tutti i messaggi prodotti dal blueprint.
+- `Destinatario aggiuntivo` può contenere un'entità `notify.*`: riceverà lo stesso resoconto della notifica persistente.
 - Con `Debug` disattivato viene creato solo il resoconto principale.
 - Con `Debug` attivato viene aggiunta una notifica tecnica se il blueprint scarta qualcosa.
 - Se imposti `Titolo notifiche`, lo stesso ID viene riutilizzato e il resoconto precedente viene sostituito.
 - Se lasci il titolo vuoto, viene mostrato `AI Home Manager` e ogni resoconto resta separato.
+- Il resoconto termina con l'elenco esplicito delle azioni eseguite; in `dry_run` mostra invece le azioni simulate.
 
 ## Prima esecuzione
 
