@@ -64,8 +64,6 @@ blueprint:
                   multiline: true
             priority:
               label: Priorità
-              description: >
-                Valore da 0 a 100 usato per risolvere conflitti tra ambiti.
               required: false
               selector:
                 number:
