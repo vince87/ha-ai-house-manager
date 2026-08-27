@@ -133,10 +133,20 @@ blueprint:
 
     notification_title:
       name: Titolo notifiche
-      description: Titolo usato per il resoconto e gli eventuali avvisi tecnici.
-      default: AI Home Manager
+      description: >
+        Se valorizzato, viene usato anche come ID stabile e la nuova notifica
+        sostituisce la precedente. Se vuoto, usa un titolo generico e conserva
+        ogni notifica separatamente.
+      default: ""
       selector:
         text:
+
+    debug_notifications:
+      name: Debug
+      description: Crea una seconda notifica quando il blueprint scarta qualcosa.
+      default: false
+      selector:
+        boolean:
 
 mode: single
 
@@ -147,6 +157,7 @@ variables:
   verification_timeout: !input verification_timeout
   extra_instructions: !input extra_instructions
   notification_title: !input notification_title
+  debug_notifications: !input debug_notifications
   azioni_pianificate: []
   analisi_complete: ""
   discovery_report: ""
@@ -905,10 +916,11 @@ actions:
             seconds: 2
 
   # Final user-facing report. Action descriptions are already localized by AI.
-  - action: persistent_notification.create
-    data:
-      title: "{{ notification_title }}"
-      message: |-
+  - variables:
+      resolved_notification_title: >-
+        {{ notification_title | trim if notification_title | trim
+           else 'AI Home Manager' }}
+      final_notification_message: |-
         🏠 {{ now().strftime('%Y-%m-%d %H:%M') }} · {{ response_language }}
         {% if execution_mode == 'dry_run' %}
         🧪 DRY RUN
@@ -927,15 +939,45 @@ actions:
         {% endfor %}
         {% endif %}
 
-  # Separate technical warning, created only when something was rejected.
   - if:
       - condition: template
-        value_template: "{{ diagnostica | count > 0 }}"
+        value_template: "{{ notification_title | trim | length > 0 }}"
     then:
       - action: persistent_notification.create
         data:
-          title: "{{ notification_title }} - Diagnostics"
-          message: |-
-            {% for item in diagnostica %}
-            - {{ item }}
-            {% endfor %}
+          title: "{{ resolved_notification_title }}"
+          message: "{{ final_notification_message }}"
+          notification_id: "ai_home_manager::{{ notification_title | trim }}"
+    else:
+      - action: persistent_notification.create
+        data:
+          title: "{{ resolved_notification_title }}"
+          message: "{{ final_notification_message }}"
+
+  # Separate technical warning, enabled only in debug mode.
+  - if:
+      - condition: template
+        value_template: >-
+          {{ debug_notifications and diagnostica | count > 0 }}
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ notification_title | trim | length > 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "{{ resolved_notification_title }} - Diagnostics"
+              notification_id: >-
+                ai_home_manager::{{ notification_title | trim }}::diagnostics
+              message: |-
+                {% for item in diagnostica %}
+                - {{ item }}
+                {% endfor %}
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "{{ resolved_notification_title }} - Diagnostics"
+              message: |-
+                {% for item in diagnostica %}
+                - {{ item }}
+                {% endfor %}
