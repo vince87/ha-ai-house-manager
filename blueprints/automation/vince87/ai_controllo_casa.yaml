@@ -44,7 +44,9 @@ blueprint:
         l'agente prova a selezionare le entità necessarie dal catalogo. I gruppi
         con attributo entity_id vengono espansi nei rispettivi membri. In caso
         di conflitto prevale la priorità maggiore; a parità prevale l'ambito
-        configurato più in basso.
+        configurato più in basso. Se definisci sotto-ambiti, le regole del
+        padre vengono anteposte a ciascun figlio e il padre non viene analizzato
+        separatamente.
       default: []
       selector:
         object:
@@ -72,6 +74,35 @@ blueprint:
                   max: 100
                   step: 1
                   mode: slider
+            subareas:
+              label: Sotto-ambiti
+              required: false
+              selector:
+                object:
+                  multiple: true
+                  label_field: title
+                  description_field: text
+                  fields:
+                    title:
+                      label: Titolo
+                      required: true
+                      selector:
+                        text:
+                    text:
+                      label: Istruzioni
+                      required: true
+                      selector:
+                        text:
+                          multiline: true
+                    priority:
+                      label: Priorità
+                      required: false
+                      selector:
+                        number:
+                          min: 0
+                          max: 100
+                          step: 1
+                          mode: slider
 
     execution_mode:
       name: Modalità di esecuzione
@@ -174,6 +205,39 @@ actions:
   # PHASE 0: automatic closed-catalog discovery. Metadata only, no states.
   ##########################################################################
   - variables:
+      analysis_units: >-
+        {% set ns = namespace(items=[]) %}
+        {% for parent in extra_instructions %}
+          {% set parent_priority = parent.get('priority', 50) | default(50, true) | int %}
+          {% set children = parent.get('subareas', []) | default([], true) %}
+          {% if children is sequence and children is not string and children | count > 0 %}
+            {% for child in children %}
+              {% if child is mapping %}
+                {% set child_priority = child.get('priority', parent_priority) | default(parent_priority, true) | int %}
+                {% set combined_text =
+                  "REGOLE AMBITO PRINCIPALE (PRECEDENZA ASSOLUTA):\n"
+                  ~ parent.get('text', '')
+                  ~ "\n\nREGOLE SOTTO-AMBITO:\n"
+                  ~ child.get('text', '')
+                  ~ "\n\nSe l'ambito principale impone STOP, ignora il sotto-ambito." %}
+                {% set ns.items = ns.items + [{
+                  'title': parent.get('title', '') ~ ' / ' ~ child.get('title', ''),
+                  'text': combined_text,
+                  'priority': child_priority
+                }] %}
+              {% endif %}
+            {% endfor %}
+          {% else %}
+            {% set ns.items = ns.items + [{
+              'title': parent.get('title', ''),
+              'text': parent.get('text', ''),
+              'priority': parent_priority
+            }] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+  - variables:
       catalog_entity_ids: >-
         {% set ns = namespace(entities=[]) %}
         {% for item in states %}
@@ -193,7 +257,7 @@ actions:
         {% endfor %}
 
       discovery_requirements: |-
-        {% for area in extra_instructions %}
+        {% for area in analysis_units %}
         AREA_INDEX: {{ loop.index }}
         TITLE: {{ area.title }}
         INSTRUCTIONS:
@@ -203,7 +267,7 @@ actions:
 
       deterministic_only: >-
         {% set ns = namespace(enabled=true) %}
-        {% for area in extra_instructions %}
+        {% for area in analysis_units %}
           {% if area.text | regex_findall('`([^`]+)`') | count == 0 %}
             {% set ns.enabled = false %}
           {% endif %}
@@ -252,6 +316,9 @@ actions:
             - Return no more than 40 entities for each area.
             - Return one result for every AREA_INDEX, even when the list is
               empty.
+            - In summary, describe only conclusions needed to justify the plan.
+              Do not paraphrase numeric rules unnecessarily.
+              Do not describe a state using words that conflict with the supplied numeric value.
 
             Return valid JSON only, without Markdown or additional text:
             {
@@ -312,7 +379,7 @@ actions:
 
   # FASE 1: lettura diretta e pianificazione, senza tool Home Assistant.
   - repeat:
-      for_each: "{{ extra_instructions }}"
+      for_each: "{{ analysis_units }}"
       sequence:
         - variables:
             entita_selezionate: >-
