@@ -67,6 +67,13 @@ Un ambito senza sotto-ambiti viene analizzato normalmente. Se aggiungi sotto-amb
 
 Le entità ricevute da ogni analisi sono l'unione dei riferimenti presenti nel padre e nel figlio. La priorità del figlio sostituisce quella del padre; se omessa, viene ereditata.
 
+## Notifiche
+
+- Con `Debug` disattivato viene creato solo il resoconto principale.
+- Con `Debug` attivato viene aggiunta una notifica tecnica se il blueprint scarta qualcosa.
+- Se imposti `Titolo notifiche`, lo stesso ID viene riutilizzato e il resoconto precedente viene sostituito.
+- Se lasci il titolo vuoto, viene mostrato `AI Home Manager` e ogni resoconto resta separato.
+
 ## Prima esecuzione
 
 1. Crea un'automazione dal blueprint.
