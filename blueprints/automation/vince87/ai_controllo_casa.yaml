@@ -224,6 +224,9 @@ actions:
             - Return no more than 40 entities for each area.
             - Return one result for every AREA_INDEX, even when the list is
               empty.
+            - In summary, describe only conclusions needed to justify the plan.
+              Do not paraphrase numeric rules unnecessarily.
+              Do not describe a state using words that conflict with the supplied numeric value.
 
             Return valid JSON only, without Markdown or additional text:
             {
