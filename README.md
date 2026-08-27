@@ -7,6 +7,7 @@ Blueprint per Home Assistant che organizza la gestione della casa in ambiti indi
 - Risoluzione deterministica dei friendly name contro il catalogo reale di Home Assistant.
 - Nessuna selezione manuale delle entità nel blueprint.
 - Pianificazione separata per ambito con priorità configurabili.
+- Sotto-ambiti che ereditano automaticamente le regole dell'ambito principale.
 - Espansione automatica dei gruppi Home Assistant.
 - Validazione di entità, servizi e parametri prima dell'esecuzione.
 - Eliminazione delle azioni già soddisfatte.
@@ -41,6 +42,30 @@ Considera l'antifurto attivo negli stati "armed_away", "armed_home" e "armed_nig
 ```
 
 Ogni friendly name deve corrispondere a una sola entità. I nomi assenti o duplicati vengono segnalati e non utilizzati.
+
+## Ambiti e sotto-ambiti
+
+Un ambito senza sotto-ambiti viene analizzato normalmente. Se aggiungi sotto-ambiti, il padre diventa un insieme di regole comuni e non genera una chiamata separata. Ogni figlio viene analizzato insieme alle regole del padre:
+
+```yaml
+- title: Tapparelle
+  text: >-
+    Leggi `Antifurto Casa`.
+    Se è attivo: tapparelle 0% e STOP.
+  subareas:
+    - title: Nord
+      priority: 50
+      text: >-
+        Gestisci `Tapparella Sala Uno` e `Tapparella Sala Due`.
+        Devono essere al 100%.
+    - title: Sud
+      priority: 50
+      text: >-
+        Gestisci `Tapparella Cucina Due`.
+        Durante l'esposizione solare deve essere al 20%.
+```
+
+Le entità ricevute da ogni analisi sono l'unione dei riferimenti presenti nel padre e nel figlio. La priorità del figlio sostituisce quella del padre; se omessa, viene ereditata.
 
 ## Prima esecuzione
 
